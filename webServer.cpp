@@ -38,7 +38,8 @@ struct RequestData
 void sig_handler(int signo) {
   std::cout << "Caught signal: " << strsignal(signo) << std::endl;
   std::cout << "Exiting program..." << std::endl;
-  closefrom(4);
+  // Close from 5 to allow listen fd and potentially connection & file fd's to close.
+  closefrom(5);
   exit(0);
 }
 
@@ -61,6 +62,7 @@ RequestData readRequest(int sockFd, std::string &filename) {
     bytesRead = read(sockFd, buffer, BUFFER_SIZE);
     if (bytesRead < 0) {
       ERROR << "Couldn't read from connection: " << strerror(errno) << ENDL;
+      closefrom(4);
       exit(-1);
     }
 
@@ -76,7 +78,7 @@ RequestData readRequest(int sockFd, std::string &filename) {
     }
   }
 
-  std::cout << headerStr << std::endl;
+  DEBUG << "Read header:\n" << headerStr << ENDL;
 
   HttpType requestType = HttpType::INVALID;
   if (headerStr.compare(0, 3, "GET") == 0) {
@@ -89,17 +91,15 @@ RequestData readRequest(int sockFd, std::string &filename) {
 
   if (requestType == HttpType::GET || requestType == HttpType::HEAD) {
     // Checking if file matches the required pattern:
-    std::cout << headerStr << std::endl;
     if (std::regex_search(headerStr, std::regex("(GET|HEAD) /(file\\d\\.html|image\\d\\.jpg) (\\r\\n|.)*"))) {
-      std::cout << "Passed RegEx" << std::endl;
       // Checking if file is in the data directory:
       for (const auto& entry : std::filesystem::directory_iterator("./data")) {
         std::string currentFilename = entry.path().filename().string();
-        std::cout << "Checking: " << headerStr.substr(headerStr.find(' ')+1, currentFilename.size()) << " against: " << currentFilename << std::endl;
+        DEBUG << "Checking: " << headerStr.substr(headerStr.find(' ')+1, currentFilename.size()) << " against: " << currentFilename << ENDL;
         // If the filenames are equal:
         if (headerStr.compare(headerStr.find('/')+1, currentFilename.size(), currentFilename) == 0) {
           filename.assign(currentFilename);
-          std::cout << filename << std::endl;
+          DEBUG << "Found match: " << filename << ENDL;
           return { requestType, 200 };
         }
       }
@@ -126,13 +126,13 @@ RequestData readRequest(int sockFd, std::string &filename) {
     // Reading the remaining chars from the socket:
     if (bufIndex < contentLength && read(sockFd, &bodyBuffer[bufIndex], contentLength-bufIndex) < 0) {
       ERROR << "Couldn't read from connection: " << strerror(errno) << ENDL;
+      closefrom(4);
       exit(-1);
     }
 
     // Trimming body string down to just the filename:
     std::string bodyStr = std::string(bodyBuffer);
-    std::cout << "Body Content:" << std::endl;
-    std::cout << bodyStr << std::endl;
+    DEBUG << "Body Content:\n" << bodyStr << ENDL;
     int eqIndex = bodyStr.find('=');
     // If the '=' can't be found for some reason:
     if (eqIndex == std::string::npos) {
@@ -157,6 +157,7 @@ void sendLine(int socketFd, std::string stringToSend) {
   // Sending the char buffer through the connection:
   if (write(socketFd, modifiedToSend.c_str(), modifiedToSend.size()) < 0) {
     ERROR << "Couldn't write to connection: " << strerror(errno) << ENDL;
+    closefrom(4);
     exit(-1);
   }
   return;
@@ -204,7 +205,6 @@ void send200(int sockFd, std::string filename, bool sendFile) {
   sendLine(sockFd, "HTTP/1.0 200 OK");
   std::filesystem::path file(filename);
   std::string fileExtension = file.extension().string();
-  std::cout << fileExtension << std::endl;
   if (fileExtension.compare(".html") == 0) {
     sendLine(sockFd, "content-type: text/html");
   } else if (fileExtension.compare(".jpg") == 0 || fileExtension.compare(".jpeg") == 0) {
@@ -227,10 +227,14 @@ void send200(int sockFd, std::string filename, bool sendFile) {
       int bytesRead = read(fileFd, &buffer, BUFFER_SIZE);
       if (bytesRead < 0) {
         ERROR << "Unable to read from file: " << strerror(errno) << ENDL;
+        closefrom(5);
+        exit(-1);
       }
 
       if (write(sockFd, &buffer, bytesRead) < 0) {
         ERROR << "Couldn't write to connection: " << strerror(errno) << ENDL;
+        closefrom(5);
+        exit(-1);
       }
 
       totalBytesRead += bytesRead;
@@ -268,23 +272,18 @@ int processConnection(int sockFd) {
   case 404: // If read header returned 404, call send404
     send404(sockFd);
     return 0;
-  case 200: // 471: If read header returned 200, call sendFile
+  case 200: // If the header was valid and the method was GET/HEAD, call send200()
     send200(sockFd, filename, requestData.type == HttpType::GET);
     return 0;
-  case 201:
+  case 201: // If the header was valid and the method was POST, call a function to save the file
     send201(sockFd);
     std::ofstream outFile(std::string("./data/" + filename));
     if (!outFile.is_open()) {
-      ERROR << "Unable to write to file: " << strerror(errno) << ENDL;
+      ERROR << "Unable to write file: " << strerror(errno) << ENDL;
     }
     outFile.close();
     return 0;
   }
-
-  // 598 students
-  // - If the header was valid and the method was GET, call sendFile()
-  // - If the header was valid and the method was HEAD, call a function to send back the header.
-  // - If the header was valid and the method was POST, call a function to save the file to dis.
 
   return 1;
 }
@@ -314,6 +313,7 @@ int main (int argc, char *argv[]) {
   // ********************************************************************
   DEBUG << "Setting up signal handlers" << ENDL;
   signal(SIGINT, sig_handler); // Only interrupt is required in project.
+  
   
   // *******************************************************************
   // * Creating the inital socket using the socket() call.
@@ -390,6 +390,7 @@ int main (int argc, char *argv[]) {
 
     if ((connFd = accept(listenFd, NULL, NULL)) < 0) {
       ERROR << "Failed to accept connection: " << strerror(errno) << ENDL;
+      closefrom(3);
       exit(-1);
     }
 
@@ -401,5 +402,5 @@ int main (int argc, char *argv[]) {
   }
 
   ERROR << "Program fell through to the end of main. A listening socket may have closed unexpectedly." << ENDL;
-  closefrom(4);
+  closefrom(3);
 }

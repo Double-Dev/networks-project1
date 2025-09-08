@@ -5,3 +5,6 @@
 
 Name: Deven Layton
 Course: 598-J
+
+Executable must be run in the parent directory of the data directory, such that ./data/<filename>
+paths work.
