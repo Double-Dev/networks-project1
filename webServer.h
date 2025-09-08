@@ -2,8 +2,10 @@
 #define HEADER_H 
 
 #include <iostream>
+#include <filesystem>
 #include <fstream>
 #include <regex>
+#include <sstream>
 #include <string>
 
 #include <string.h>
@@ -16,9 +18,9 @@
 
 #include "logging.h"
 
-#define GET 1
-#define HEAD 2
-#define POST 3
+enum HttpType {
+    INVALID = 0, GET, HEAD, POST
+};
 
 inline int BUFFER_SIZE = 10;
 
